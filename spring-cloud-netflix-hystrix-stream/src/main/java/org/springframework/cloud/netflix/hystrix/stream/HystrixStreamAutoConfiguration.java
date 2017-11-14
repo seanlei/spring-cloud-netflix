@@ -22,12 +22,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.actuator.HasFeatures;
 import org.springframework.cloud.client.discovery.DiscoveryClient;
+import org.springframework.cloud.client.discovery.simple.SimpleDiscoveryClient;
+import org.springframework.cloud.client.serviceregistry.Registration;
 import org.springframework.cloud.stream.annotation.EnableBinding;
 import org.springframework.cloud.stream.annotation.Output;
 import org.springframework.cloud.stream.config.BindingProperties;
-import org.springframework.cloud.stream.config.ChannelBindingServiceProperties;
+import org.springframework.cloud.stream.config.BindingServiceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.MessageChannel;
@@ -55,7 +58,7 @@ import com.netflix.hystrix.HystrixCircuitBreaker;
 public class HystrixStreamAutoConfiguration {
 
 	@Autowired
-	private ChannelBindingServiceProperties bindings;
+	private BindingServiceProperties bindings;
 
 	@Autowired
 	private HystrixStreamProperties properties;
@@ -63,6 +66,9 @@ public class HystrixStreamAutoConfiguration {
 	@Autowired
 	@Output(HystrixStreamClient.OUTPUT)
 	private MessageChannel outboundChannel;
+
+	@Autowired(required = false)
+	private Registration registration;
 
 	@Bean
 	public HasFeatures hystrixStreamQueueFeature() {
@@ -94,8 +100,13 @@ public class HystrixStreamAutoConfiguration {
 	}
 
 	@Bean
-	public HystrixStreamTask hystrixStreamTask(DiscoveryClient discoveryClient) {
-		return new HystrixStreamTask(this.outboundChannel, discoveryClient, this.properties);
+	public HystrixStreamTask hystrixStreamTask(SimpleDiscoveryClient simpleDiscoveryClient) {
+		ServiceInstance serviceInstance = this.registration;
+		if (serviceInstance == null) {
+			serviceInstance = simpleDiscoveryClient.getLocalServiceInstance();
+		}
+		return new HystrixStreamTask(this.outboundChannel, serviceInstance,
+				this.properties);
 	}
 
 }

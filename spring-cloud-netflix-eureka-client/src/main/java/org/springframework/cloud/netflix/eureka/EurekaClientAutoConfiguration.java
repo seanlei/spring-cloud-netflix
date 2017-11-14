@@ -12,7 +12,6 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package org.springframework.cloud.netflix.eureka;
@@ -26,6 +25,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.endpoint.Endpoint;
@@ -71,8 +71,6 @@ import com.netflix.discovery.AbstractDiscoveryClientOptionalArgs;
 import com.netflix.discovery.EurekaClient;
 import com.netflix.discovery.EurekaClientConfig;
 
-import static org.springframework.cloud.commons.util.IdUtils.getDefaultInstanceId;
-
 /**
  * @author Dave Syer
  * @author Spencer Gibb
@@ -89,7 +87,9 @@ import static org.springframework.cloud.commons.util.IdUtils.getDefaultInstanceI
 @ConditionalOnProperty(value = "eureka.client.enabled", matchIfMissing = true)
 @AutoConfigureBefore({ NoopDiscoveryClientAutoConfiguration.class,
 		CommonsClientAutoConfiguration.class, ServiceRegistryAutoConfiguration.class })
-@AutoConfigureAfter(name = "org.springframework.cloud.autoconfigure.RefreshAutoConfiguration")
+@AutoConfigureAfter(name = {"org.springframework.cloud.autoconfigure.RefreshAutoConfiguration",
+		"org.springframework.cloud.netflix.eureka.EurekaDiscoveryClientConfiguration",
+		"org.springframework.cloud.client.serviceregistry.AutoServiceRegistrationAutoConfiguration"})
 public class EurekaClientAutoConfiguration {
 
 	private ConfigurableEnvironment env;
@@ -126,13 +126,22 @@ public class EurekaClientAutoConfiguration {
 		String hostname = eurekaPropertyResolver.getProperty("hostname");
 
 		boolean preferIpAddress = Boolean.parseBoolean(eurekaPropertyResolver.getProperty("preferIpAddress"));
+		boolean isSecurePortEnabled = Boolean.parseBoolean(eurekaPropertyResolver.getProperty("securePortEnabled"));
 		int nonSecurePort = Integer.valueOf(propertyResolver.getProperty("server.port", propertyResolver.getProperty("port", "8080")));
+
 		int managementPort = Integer.valueOf(propertyResolver.getProperty("management.port", String.valueOf(nonSecurePort)));
 		String managementContextPath = propertyResolver.getProperty("management.contextPath", propertyResolver.getProperty("server.contextPath", "/"));
+		Integer jmxPort = propertyResolver.getProperty("com.sun.management.jmxremote.port", Integer.class);//nullable
 		EurekaInstanceConfigBean instance = new EurekaInstanceConfigBean(inetUtils);
 		instance.setNonSecurePort(nonSecurePort);
 		instance.setInstanceId(getDefaultInstanceId(propertyResolver));
 		instance.setPreferIpAddress(preferIpAddress);
+
+		if(isSecurePortEnabled) {
+			int securePort = Integer.valueOf(propertyResolver.getProperty("server.port", propertyResolver.getProperty("port", "8080")));
+			instance.setSecurePort(securePort);
+		}
+
 		if (managementPort != nonSecurePort && managementPort != 0) {
 			if (StringUtils.hasText(hostname)) {
 				instance.setHostname(hostname);
@@ -148,12 +157,25 @@ public class EurekaClientAutoConfiguration {
 			if (StringUtils.hasText(healthCheckUrlPath)) {
 				instance.setHealthCheckUrlPath(healthCheckUrlPath);
 			}
+
 			String scheme = instance.getSecurePortEnabled() ? "https" : "http";
 			URL base = new URL(scheme, instance.getHostname(), managementPort, managementContextPath);
 			instance.setStatusPageUrl(new URL(base, StringUtils.trimLeadingCharacter(instance.getStatusPageUrlPath(), '/')).toString());
 			instance.setHealthCheckUrl(new URL(base, StringUtils.trimLeadingCharacter(instance.getHealthCheckUrlPath(), '/')).toString());
 		}
+		setupMetadataMap(instance, managementPort, jmxPort);
 		return instance;
+	}
+
+	private void setupMetadataMap(EurekaInstanceConfigBean instance, int managementPort,
+			Integer jmxPort) {
+		Map<String, String> metadataMap = instance.getMetadataMap();
+		if (metadataMap.get("management.port") == null && managementPort != 0) {
+			metadataMap.put("management.port", String.valueOf(managementPort));
+		}
+		if (metadataMap.get("jmx.port") == null && jmxPort != null) {
+			metadataMap.put("jmx.port", String.valueOf(jmxPort));
+		}
 	}
 
 	@Bean

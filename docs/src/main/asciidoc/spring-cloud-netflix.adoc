@@ -38,7 +38,6 @@ Example eureka client:
 @Configuration
 @ComponentScan
 @EnableAutoConfiguration
-@EnableEurekaClient
 @RestController
 public class Application {
 
@@ -54,9 +53,8 @@ public class Application {
 }
 ----
 
-(i.e. utterly normal Spring Boot app). In this example we use
-`@EnableEurekaClient` explicitly, but with only Eureka available you
-could also use `@EnableDiscoveryClient`. Configuration is required to
+(i.e. utterly normal Spring Boot app). By having `spring-cloud-starter-netflix-eureka-client`
+ on the classpath your application will automatically register with the Eureka Server.  Configuration is required to
 locate the Eureka server. Example:
 
 
@@ -76,7 +74,8 @@ The default application name (service ID), virtual host and non-secure
 port, taken from the `Environment`, are `${spring.application.name}`,
 `${spring.application.name}` and `${server.port}` respectively.
 
-`@EnableEurekaClient` makes the app into both a Eureka "instance"
+Having `spring-cloud-starter-netflix-eureka-client` on the classpath
+makes the app into both a Eureka "instance"
 (i.e. it registers itself) and a "client" (i.e. it can query the
 registry to locate other services). The instance behaviour is driven
 by `eureka.instance.*` configuration keys, but the defaults will be
@@ -85,6 +84,8 @@ fine if you ensure that your application has a
 ID, or VIP).
 
 See {github-code}/spring-cloud-netflix-eureka-client/src/main/java/org/springframework/cloud/netflix/eureka/EurekaInstanceConfigBean.java[EurekaInstanceConfigBean] and {github-code}/spring-cloud-netflix-eureka-client/src/main/java/org/springframework/cloud/netflix/eureka/EurekaClientConfigBean.java[EurekaClientConfigBean] for more details of the configurable options.
+
+To disable the Eureka Discovery Client you can set `eureka.client.enabled` to `false`.
 
 === Authenticating with the Eureka Server
 
@@ -240,7 +241,7 @@ random value will not be needed.
 
 === Using the EurekaClient
 
-Once you have an app that is `@EnableDiscoveryClient` (or `@EnableEurekaClient`) you can use it to
+Once you have an app that is a discovery client you can use it to
 discover service instances from the <<spring-cloud-eureka-server,
 Eureka Server>>. One way to do that is to use the native
 `com.netflix.discovery.EurekaClient` (as opposed to the Spring
@@ -668,8 +669,9 @@ in order for the Hystrix Dashboard to make a successful connection to the stream
 
 Looking at an individual instances Hystrix data is not very useful in terms of the overall health of the system.  https://github.com/Netflix/Turbine[Turbine] is an application that aggregates all of the relevant `/hystrix.stream` endpoints into a combined `/turbine.stream` for use in the Hystrix Dashboard.  Individual instances are located via Eureka.  Running Turbine is as simple as annotating your main class with the `@EnableTurbine` annotation  (e.g. using spring-cloud-starter-netflix-turbine to set up the classpath).  All of the documented configuration properties from https://github.com/Netflix/Turbine/wiki/Configuration-(1.x)[the Turbine 1 wiki] apply.  The only difference is that the `turbine.instanceUrlSuffix` does not need the port prepended as this is handled automatically unless `turbine.instanceInsertPort=false`.
 
-NOTE: By default, Turbine looks for the `/hystrix.stream` endpoint on a registered instance by looking up its `homePageUrl` entry in Eureka, then appending `/hystrix.stream` to it. This means that if `spring-boot-actuator` is running on its own port (which is the default), the call to `/hystrix.stream` will fail. 
-To make turbine find the Hystrix stream at the correct port, you need to add `management.port` to the instances' metadata: 
+NOTE: By default, Turbine looks for the `/hystrix.stream` endpoint on a registered instance by looking up its `hostName` and `port` entries in Eureka, then appending `/hystrix.stream` to it.
+If the instance's metadata contains `management.port`, it will be used instead of the `port` value for the `/hystrix.stream` endpoint.
+By default, metadata entry `management.port` is equal to the `management.port` configuration property, it can be overridden though with following configuration:
 ----
 eureka:
   instance:
@@ -686,6 +688,9 @@ turbine:
     clusterConfig: CUSTOMERS
   appConfig: customers
 ----
+
+If you need to customize which cluster names should be used by Turbine (you don't want to store cluster names in
+`turbine.aggregator.clusterConfig` configuration) provide a bean of type `TurbineClustersProvider`.
 
 The `clusterName` can be customized by a SPEL expression in `turbine.clusterNameExpression` with root an instance of `InstanceInfo`. The default value is `appName`, which means that the Eureka serviceId ends up as the cluster key (i.e. the `InstanceInfo` for customers has an `appName` of "CUSTOMERS").  A different example would be `turbine.clusterNameExpression=aSGName`, which would get the cluster name from the AWS ASG name. Another example:
 
@@ -829,6 +834,7 @@ To set the `IRule` for a service name `users` you could set the following:
 ----
 users:
   ribbon:
+    NIWSServerListClassName: com.netflix.loadbalancer.ConfigurationBasedServerList
     NFLoadBalancerRuleClassName: com.netflix.loadbalancer.WeightedResponseTimeRule
 ----
 
@@ -971,7 +977,6 @@ Example spring boot app
 @Configuration
 @ComponentScan
 @EnableAutoConfiguration
-@EnableEurekaClient
 @EnableFeignClients
 public class Application {
 
@@ -1243,7 +1248,7 @@ protected interface HystrixClient {
 static class HystrixClientFallbackFactory implements FallbackFactory<HystrixClient> {
 	@Override
 	public HystrixClient create(Throwable cause) {
-		return new HystrixClientWithFallBackFactory() {
+		return new HystrixClient() {
 			@Override
 			public Hello iFailSometimes() {
 				return new Hello("fallback; reason was: " + cause.getMessage());
@@ -1497,9 +1502,39 @@ The location of the backend can be specified as either a "serviceId"
       url: http://example.com/users_service
 ----
 
-These simple url-routes don't get executed as a `HystrixCommand` nor can you loadbalance multiple URLs with Ribbon.
-To achieve this, specify a service-route and configure a Ribbon client for the
-serviceId (this currently requires disabling Eureka support in Ribbon:
+These simple url-routes don't get executed as a `HystrixCommand` nor do they loadbalance multiple URLs with Ribbon.
+To achieve this, you can specify a `serviceId` with a static list of servers:
+
+.application.yml
+[source,yaml]
+----
+zuul:
+  routes:
+    echo:
+      path: /myusers/**
+      serviceId: myusers-service
+      stripPrefix: true
+
+hystrix:
+  command:
+    myusers-service:
+      execution:
+        isolation:
+          thread:
+            timeoutInMilliseconds: ...
+
+myusers-service:
+  ribbon:
+    NIWSServerListClassName: com.netflix.loadbalancer.ConfigurationBasedServerList
+    ListOfServers: http://example1.com,http://example2.com
+    ConnectTimeout: 1000
+    ReadTimeout: 3000
+    MaxTotalHttpConnections: 500
+    MaxConnectionsPerHost: 100  
+----
+
+Another method is specifiying a service-route and configure a Ribbon client for the
+serviceId (this requires disabling Eureka support in Ribbon:
 see <<spring-cloud-ribbon-without-eureka,above for more information>>), e.g.
 
 .application.yml
@@ -1540,7 +1575,7 @@ This means that a serviceId "myusers-v1" will be mapped to route
 groups must be present in both servicePattern and routePattern.  If
 servicePattern does not match a serviceId, the default behavior is
 used. In the example above, a serviceId "myusers" will be mapped to route
-"/myusers/{all}" (no version detected) This feature is disable by
+"/myusers/{all}" (no version detected) This feature is disabled by
 default and only applies to discovered services.
 
 To add a prefix to all mappings, set `zuul.prefix` to a value, such as
@@ -1697,11 +1732,17 @@ Security. The assumption in this case is that the downstream services
 might add these headers too, and we want the values from the proxy.
 To not discard these well known security headers in case Spring Security is on the classpath you can set `zuul.ignoreSecurityHeaders` to `false`. This can be useful if you disabled the HTTP Security response headers in Spring Security and want the values provided by downstream services
 
-=== The Routes Endpoint
+=== Management Endpoints
 
-If you are using `@EnableZuulProxy` with tha Spring Boot Actuator you
-will enable (by default) an additional endpoint, available via HTTP as
-`/routes`. A GET to this endpoint will return a list of the mapped
+If you are using `@EnableZuulProxy` with the Spring Boot Actuator you
+will enable (by default) two additional endpoints:
+
+* Routes
+* Filters
+
+==== Routes Endpoint
+
+A GET to the routes endpoint at `/routes` will return a list of the mapped
 routes:
 
 .GET /routes
@@ -1739,6 +1780,12 @@ this endpoint by setting `endpoints.routes.enabled` to `false`.
 NOTE: the routes should respond automatically to changes in the
 service catalog, but the POST to /routes is a way to force the change
 to happen immediately.
+
+==== Filters Endpoint
+
+A GET to the filters endpoint at `/filters` will return a map of Zuul
+filters by type. For each filter type in the map, you will find a list
+of all the filters of that type, along with their details.
 
 === Strangulation Patterns and Local Forwards
 
@@ -1977,6 +2024,79 @@ class MyFallbackProvider implements ZuulFallbackProvider {
     }
 }
 ----
+
+If you would like to choose the response based on the cause of the failure use `FallbackProvider` which will replace `ZuulFallbackProvder` in future versions.
+
+[source,java]
+----
+class MyFallbackProvider implements FallbackProvider {
+
+    @Override
+    public String getRoute() {
+        return "*";
+    }
+
+    @Override
+    public ClientHttpResponse fallbackResponse(final Throwable cause) {
+        if (cause instanceof HystrixTimeoutException) {
+            return response(HttpStatus.GATEWAY_TIMEOUT);
+        } else {
+            return fallbackResponse();
+        }
+    }
+
+    @Override
+    public ClientHttpResponse fallbackResponse() {
+        return response(HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    private ClientHttpResponse response(final HttpStatus status) {
+        return new ClientHttpResponse() {
+            @Override
+            public HttpStatus getStatusCode() throws IOException {
+                return status;
+            }
+
+            @Override
+            public int getRawStatusCode() throws IOException {
+                return status.value();
+            }
+
+            @Override
+            public String getStatusText() throws IOException {
+                return status.getReasonPhrase();
+            }
+
+            @Override
+            public void close() {
+            }
+
+            @Override
+            public InputStream getBody() throws IOException {
+                return new ByteArrayInputStream("fallback".getBytes());
+            }
+
+            @Override
+            public HttpHeaders getHeaders() {
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_JSON);
+                return headers;
+            }
+        };
+    }
+}
+----
+
+=== Zuul Timeouts
+
+If you want to configure the socket timeouts and read timeouts for requests proxied through
+Zuul there are two options based on your configuration.
+
+If Zuul is using service discovery than you need to configure these timeouts via Ribbon properties,
+`ribbon.ReadTimeout` and `ribbon.SocketTimeout`.
+
+If you have configured Zuul routes by specifying URLs than you will need to use
+`zuul.host.connect-timeout-millis` and `zuul.host.socket-timeout-millis`.
 
 [[zuul-redirect-location-rewrite]]
 === Rewriting `Location` header
@@ -2622,6 +2742,9 @@ certain Ribbon properties.  The properties you can use are
 `client.ribbon.MaxAutoRetries`, `client.ribbon.MaxAutoRetriesNextServer`, and
 `client.ribbon.OkToRetryOnAllOperations`. See the https://github.com/Netflix/ribbon/wiki/Getting-Started#the-properties-file-sample-clientproperties[Ribbon documentation]
 for a description of what there properties do.
+
+WARNING: Enabling `client.ribbon.OkToRetryOnAllOperations` includes retring POST requests wich can have a impact
+on the server's resources due to the buffering of the request's body.
 
 In addition you may want to retry requests when certain status codes are returned in the
 response.  You can list the response codes you would like the Ribbon client to retry using the
